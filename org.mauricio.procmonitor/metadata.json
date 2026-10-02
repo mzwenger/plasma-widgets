@@ -1,0 +1,14 @@
+{
+    "KPlugin": {
+        "Authors": [{ "Name": "Mauricio" }],
+        "Category": "System Information",
+        "Description": "Uso de CPU o memoria con lista de procesos al hacer clic",
+        "Icon": "utilities-system-monitor",
+        "Id": "org.mauricio.procmonitor",
+        "License": "GPL",
+        "Name": "Monitor con procesos",
+        "Version": "1.0"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0">
+  <kcfgfile name=""/>
+  <group name="General">
+    <!-- Un disco por entrada, separadas por ";": letra|nombre|origen.
+         origen = punto de montaje (se lee con df) o /dev/... NTFS sin montar (se lee con ntfsinfo). -->
+    <entry name="disks" type="String"><default>S|Sistema|/;W|Windows|/dev/nvme0n1p3;D|DATOS|/mnt/datos</default></entry>
+    <!-- Porcentaje libre por debajo del cual la barra pasa a ámbar / rojo -->
+    <entry name="warnPercent" type="Int"><default>20</default></entry>
+    <entry name="critPercent" type="Int"><default>10</default></entry>
+  </group>
+</kcfg>
