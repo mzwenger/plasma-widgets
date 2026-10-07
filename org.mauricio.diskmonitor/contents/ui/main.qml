@@ -194,9 +194,9 @@ PlasmoidItem {
             radius: d / 2
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            color: Kirigami.Theme.backgroundColor
+            color: Qt.rgba(Kirigami.Theme.backgroundColor.r, Kirigami.Theme.backgroundColor.g, Kirigami.Theme.backgroundColor.b, 0.5)
             border.width: 1
-            border.color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.7)
+            border.color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.4)
             PlasmaComponents.Label {
                 anchors.centerIn: parent
                 text: root.def.letter
