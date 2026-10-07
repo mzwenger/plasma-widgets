@@ -175,7 +175,27 @@ PlasmoidItem {
         PlasmaComponents.Label {
             anchors.centerIn: parent
             text: Math.round(root.percent) + "%"
-            font.pixelSize: Math.max(8, compact.height * 0.34)
+            font.pixelSize: Math.max(8, compact.height * 0.30)
+            font.bold: true
+        }
+
+        // Chip con el nombre del recurso, apoyado en el borde inferior derecho (igual que la letra de los discos)
+        Rectangle {
+            height: Math.max(10, Math.round(compact.height * 0.32))
+            width: chipLabel.implicitWidth + height * 0.5
+            radius: height / 2
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            color: Kirigami.Theme.backgroundColor
+            border.width: 1
+            border.color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.7)
+            PlasmaComponents.Label {
+                id: chipLabel
+                anchors.centerIn: parent
+                text: root.isCpu ? "CPU" : (root.isGpu ? "GPU" : "MEM")
+                font.pixelSize: Math.max(6, Math.round(parent.height * 0.6))
+                font.bold: true
+            }
         }
     }
 
