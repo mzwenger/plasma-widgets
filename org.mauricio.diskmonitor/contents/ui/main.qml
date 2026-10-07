@@ -49,8 +49,9 @@ PlasmoidItem {
         + (size > 0 ? formatBytes(avail) + " libres de " + formatBytes(size) : "Espacio sin datos")
 
     // Espacio. Montados: df. Particiones NTFS sin montar (Windows): ntfsinfo lee la tabla de clusters sin montar.
+    // -f: Windows deja el volumen marcado "pendiente de chequeo" (inicio rápido / apagado incompleto) y sin -f ntfsinfo se niega a abrirlo; es solo lectura.
     readonly property string spaceCommand: isRawDevice
-        ? "sudo -n ntfsinfo -m " + quoted + " 2>/dev/null | awk '/Cluster Size/{c=$3} /Volume Size in Clusters/{t=$5} /Free Clusters/{f=$3} END{if(c) printf \"%.0f %.0f\", c*t, c*f}'"
+        ? "sudo -n ntfsinfo -f -m " + quoted + " 2>/dev/null | awk '/Cluster Size/{c=$3} /Volume Size in Clusters/{t=$5} /Free Clusters/{f=$3} END{if(c) printf \"%.0f %.0f\", c*t, c*f}'"
         : "df -B1 --output=size,avail " + quoted + " 2>/dev/null | tail -n 1"
 
     // Actividad: contadores del kernel para la partición (sectores leídos, escritos y ms ocupado) + reloj del sistema
