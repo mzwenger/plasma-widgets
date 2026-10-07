@@ -2,12 +2,12 @@
     "KPlugin": {
         "Authors": [{ "Name": "Mauricio" }],
         "Category": "System Information",
-        "Description": "Espacio libre en cada disco, con detalle al hacer clic",
+        "Description": "Actividad y espacio de un disco, con detalle al hacer clic",
         "Icon": "drive-harddisk",
         "Id": "org.mauricio.diskmonitor",
         "License": "GPL",
-        "Name": "Espacio en discos",
-        "Version": "1.0"
+        "Name": "Disco",
+        "Version": "2.0"
     },
     "KPackageStructure": "Plasma/Applet",
     "X-Plasma-API-Minimum-Version": "6.0"

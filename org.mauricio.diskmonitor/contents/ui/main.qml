@@ -1,9 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
-import QtQuick.Controls as QQC2
 
 import org.kde.plasma.plasmoid
-import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.plasma.extras as PlasmaExtras
 import org.kde.plasma.plasma5support as P5Support
@@ -12,33 +10,53 @@ import org.kde.kirigami as Kirigami
 PlasmoidItem {
     id: root
 
-    // [{letter, name, source, size, avail}] — size/avail en bytes (0 = sin dato)
-    property var disks: []
-    readonly property real totalAvail: disks.reduce((s, d) => s + d.avail, 0)
+    // Configuración: "letra|nombre|origen"
+    readonly property var def: {
+        const p = Plasmoid.configuration.disk.split("|").map(s => s.trim())
+        return { letter: p[0] || "?", name: p[1] || p[0] || "Disco", source: p[2] || "/" }
+    }
+    readonly property bool isRawDevice: def.source.startsWith("/dev/")
+    readonly property string quoted: "'" + def.source.replace(/'/g, "'\\''") + "'"
+
+    // Espacio (bytes; 0 = sin dato)
+    property real size: 0
+    property real avail: 0
+    // Actividad: % del tiempo en que el disco estuvo ocupado, y velocidades en bytes/s
+    property real busy: 0
+    property real readRate: 0
+    property real writeRate: 0
+    property var prev: null
+
+    readonly property real usedFraction: size > 0 ? 1 - avail / size : 0
+    readonly property real freePercent: size > 0 ? 100 * avail / size : 0
 
     readonly property color okColor: "#2ecc71"
     readonly property color warnColor: "#f39c12"
+    readonly property color busyWarnColor: "#f1c40f"
     readonly property color critColor: "#e74c3c"
 
-    Plasmoid.title: "Espacio en discos"
-    toolTipMainText: "Discos"
-    toolTipSubText: disks.map(d => d.name + ": " + formatBytes(d.avail) + " libres de " + formatBytes(d.size)).join("\n")
+    readonly property color spaceColor: size <= 0 ? Kirigami.Theme.disabledTextColor
+        : freePercent < Plasmoid.configuration.critPercent ? critColor
+        : freePercent < Plasmoid.configuration.warnPercent ? warnColor
+        : okColor
+    readonly property color busyColor: busy > Plasmoid.configuration.busyCrit ? critColor
+        : busy >= Plasmoid.configuration.busyWarn ? busyWarnColor
+        : okColor
 
-    // Definición de discos desde la configuración: "letra|nombre|origen;..."
-    readonly property var diskDefs: Plasmoid.configuration.disks.split(";")
-        .map(s => s.split("|"))
-        .filter(p => p.length === 3)
-        .map(p => ({ letter: p[0].trim(), name: p[1].trim(), source: p[2].trim() }))
+    Plasmoid.title: def.name
+    toolTipMainText: def.name
+    toolTipSubText: "Actividad " + Math.round(busy) + "%\n"
+        + (size > 0 ? formatBytes(avail) + " libres de " + formatBytes(size) : "Espacio sin datos")
 
-    // Un comando por disco; cada uno imprime "letra<TAB>bytes_totales bytes_libres".
-    // Montados: df. Particiones NTFS sin montar (Windows): ntfsinfo lee la tabla de clusters sin montar.
-    readonly property string command: diskDefs.map(d => {
-        const q = "'" + d.source.replace(/'/g, "'\\''") + "'"
-        const read = d.source.startsWith("/dev/")
-            ? "sudo -n ntfsinfo -m " + q + " 2>/dev/null | awk '/Cluster Size/{c=$3} /Volume Size in Clusters/{t=$5} /Free Clusters/{f=$3} END{if(c) printf \"%.0f %.0f\", c*t, c*f}'"
-            : "df -B1 --output=size,avail " + q + " 2>/dev/null | tail -n 1"
-        return "printf '%s\\t%s\\n' '" + d.letter + "' \"$(" + read + ")\""
-    }).join("; ")
+    // Espacio. Montados: df. Particiones NTFS sin montar (Windows): ntfsinfo lee la tabla de clusters sin montar.
+    readonly property string spaceCommand: isRawDevice
+        ? "sudo -n ntfsinfo -m " + quoted + " 2>/dev/null | awk '/Cluster Size/{c=$3} /Volume Size in Clusters/{t=$5} /Free Clusters/{f=$3} END{if(c) printf \"%.0f %.0f\", c*t, c*f}'"
+        : "df -B1 --output=size,avail " + quoted + " 2>/dev/null | tail -n 1"
+
+    // Actividad: contadores del kernel para la partición (sectores leídos, escritos y ms ocupado) + reloj del sistema
+    readonly property string activityCommand:
+        "d=$(basename \"$(readlink -f " + (isRawDevice ? quoted : "\"$(findmnt -nvo SOURCE --target " + quoted + ")\"") + ")\"); "
+        + "awk -v d=\"$d\" '$3==d{print $6, $10, $13}' /proc/diskstats; cut -d' ' -f1 /proc/uptime"
 
     P5Support.DataSource {
         id: executable
@@ -46,35 +64,34 @@ PlasmoidItem {
         connectedSources: []
         onNewData: (source, data) => {
             disconnectSource(source)
-            root.parseOutput(data["stdout"] || "")
+            const out = data["stdout"] || ""
+            if (source === root.spaceCommand) root.parseSpace(out)
+            else if (source === root.activityCommand) root.parseActivity(out)
         }
     }
 
-    function refresh() {
-        if (executable.connectedSources.length === 0) {
-            executable.connectSource(command)
-        }
+    function run(cmd) {
+        if (executable.connectedSources.indexOf(cmd) < 0) executable.connectSource(cmd)
     }
 
-    function parseOutput(out) {
-        const values = {}
-        for (const line of out.split("\n")) {
-            const tab = line.indexOf("\t")
-            if (tab < 0) continue
-            const nums = line.slice(tab + 1).trim().split(/\s+/)
-            values[line.slice(0, tab)] = { size: parseFloat(nums[0]) || 0, avail: parseFloat(nums[1]) || 0 }
-        }
-        disks = diskDefs.map(d => Object.assign({}, d, values[d.letter] || { size: 0, avail: 0 }))
+    function parseSpace(out) {
+        const n = out.trim().split(/\s+/)
+        size = parseFloat(n[0]) || 0
+        avail = parseFloat(n[1]) || 0
     }
 
-    function freePercent(d) { return d.size > 0 ? 100 * d.avail / d.size : 0 }
-    function usedFraction(d) { return d.size > 0 ? 1 - d.avail / d.size : 0 }
-    function barColor(d) {
-        if (d.size <= 0) return Kirigami.Theme.disabledTextColor
-        const free = freePercent(d)
-        if (free < Plasmoid.configuration.critPercent) return critColor
-        if (free < Plasmoid.configuration.warnPercent) return warnColor
-        return okColor
+    function parseActivity(out) {
+        const lines = out.trim().split("\n")
+        if (lines.length < 2) return
+        const c = lines[0].trim().split(/\s+/).map(Number)
+        const now = { sr: c[0], sw: c[1], ticks: c[2], t: parseFloat(lines[1]) }
+        if (prev && now.t > prev.t) {
+            const dt = now.t - prev.t
+            busy = Math.max(0, Math.min(100, (now.ticks - prev.ticks) / (dt * 10)))
+            readRate = Math.max(0, (now.sr - prev.sr) * 512 / dt)
+            writeRate = Math.max(0, (now.sw - prev.sw) * 512 / dt)
+        }
+        prev = now
     }
 
     // Mismo criterio que "df -h": unidades de 1024
@@ -84,11 +101,11 @@ PlasmoidItem {
         if (g >= 1000) return (g / 1024).toFixed(1) + " TB"
         return Math.round(g) + " GB"
     }
-    function formatShort(b) {
-        if (b <= 0) return "—"
-        const g = b / 1073741824
-        if (g >= 1000) return (g / 1024).toFixed(1) + "T"
-        return Math.round(g) + "G"
+    function formatRate(b) {
+        const m = b / 1048576
+        if (m >= 100) return Math.round(m) + " MB/s"
+        if (m >= 0.1) return m.toFixed(1) + " MB/s"
+        return "0 MB/s"
     }
 
     Timer {
@@ -96,144 +113,182 @@ PlasmoidItem {
         repeat: true
         triggeredOnStart: true
         running: true
-        onTriggered: root.refresh()
+        onTriggered: root.run(root.spaceCommand)
     }
-    onExpandedChanged: if (expanded) refresh()
+    Timer {
+        interval: 2000
+        repeat: true
+        triggeredOnStart: true
+        running: true
+        onTriggered: root.run(root.activityCommand)
+    }
+    onExpandedChanged: if (expanded) run(spaceCommand)
 
     compactRepresentation: MouseArea {
         id: compact
-        Layout.minimumWidth: grid.implicitWidth + Kirigami.Units.smallSpacing * 2
-        Layout.preferredWidth: Layout.minimumWidth
+        Layout.minimumWidth: height
+        Layout.preferredWidth: height
         hoverEnabled: true
         onClicked: root.expanded = !root.expanded
 
-        readonly property int fontPx: Math.max(8, Math.floor(compact.height * 0.24))
+        Canvas {
+            id: ring
+            anchors.fill: parent
+            anchors.margins: Math.round(parent.height * 0.08)
+            property real busy: root.busy
+            property real used: root.usedFraction
+            property color busyColor: root.busyColor
+            property color spaceColor: root.spaceColor
+            property color bg: Kirigami.Theme.textColor
+            onBusyChanged: requestPaint()
+            onUsedChanged: requestPaint()
+            onBusyColorChanged: requestPaint()
+            onSpaceColorChanged: requestPaint()
+            onPaint: {
+                const ctx = getContext("2d")
+                ctx.reset()
+                const w = Math.min(width, height)
+                const lw = Math.max(2, w * 0.09)
+                const r = w / 2 - lw / 2
+                const cx = width / 2, cy = height / 2
 
-        GridLayout {
-            id: grid
+                // Anillo exterior: actividad
+                ctx.lineWidth = lw
+                ctx.strokeStyle = Qt.rgba(bg.r, bg.g, bg.b, 0.15)
+                ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.stroke()
+                if (busy > 0) {
+                    ctx.strokeStyle = busyColor
+                    ctx.lineCap = "round"
+                    const start = -Math.PI / 2
+                    ctx.beginPath(); ctx.arc(cx, cy, r, start, start + 2 * Math.PI * busy / 100); ctx.stroke()
+                }
+
+                // Interior: se llena de abajo hacia arriba según el espacio ocupado
+                const ri = r - lw / 2 - Math.max(1, w * 0.05)
+                ctx.fillStyle = Qt.rgba(bg.r, bg.g, bg.b, 0.06)
+                ctx.beginPath(); ctx.arc(cx, cy, ri, 0, 2 * Math.PI); ctx.fill()
+                if (used > 0) {
+                    const h = 2 * ri * used
+                    ctx.save()
+                    ctx.beginPath(); ctx.arc(cx, cy, ri, 0, 2 * Math.PI); ctx.clip()
+                    ctx.fillStyle = Qt.rgba(spaceColor.r, spaceColor.g, spaceColor.b, 0.55)
+                    ctx.fillRect(0, cy + ri - h, width, h)
+                    ctx.restore()
+                }
+            }
+        }
+
+        PlasmaComponents.Label {
             anchors.centerIn: parent
-            columns: 3
-            rowSpacing: Math.max(1, Math.round(compact.height * 0.06))
-            columnSpacing: Kirigami.Units.smallSpacing
+            text: Math.round(root.busy) + "%"
+            font.pixelSize: Math.max(8, compact.height * 0.30)
+            font.bold: true
+            color: root.busy >= 1 ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
+        }
 
-            Repeater {
-                model: root.disks
-                delegate: PlasmaComponents.Label {
-                    required property var modelData
-                    text: modelData.letter
-                    font.pixelSize: compact.fontPx
-                    font.bold: true
-                    Layout.row: index
-                    Layout.column: 0
-                    required property int index
-                }
-            }
-            Repeater {
-                model: root.disks
-                delegate: Rectangle {
-                    required property var modelData
-                    required property int index
-                    Layout.row: index
-                    Layout.column: 1
-                    Layout.preferredWidth: compact.height * 1.5
-                    Layout.preferredHeight: Math.max(3, Math.round(compact.height * 0.14))
-                    radius: height / 2
-                    color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.15)
-                    Rectangle {
-                        anchors.left: parent.left
-                        anchors.top: parent.top
-                        anchors.bottom: parent.bottom
-                        width: parent.width * root.usedFraction(modelData)
-                        radius: parent.radius
-                        color: root.barColor(modelData)
-                    }
-                }
-            }
-            Repeater {
-                model: root.disks
-                delegate: PlasmaComponents.Label {
-                    required property var modelData
-                    required property int index
-                    Layout.row: index
-                    Layout.column: 2
-                    Layout.minimumWidth: compact.fontPx * 2.6
-                    horizontalAlignment: Text.AlignRight
-                    text: root.formatShort(modelData.avail)
-                    font.pixelSize: compact.fontPx
-                }
+        // Etiqueta con la letra del disco, apoyada en el borde inferior derecho
+        Rectangle {
+            readonly property int d: Math.max(10, Math.round(compact.height * 0.36))
+            width: d
+            height: d
+            radius: d / 2
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            color: Kirigami.Theme.backgroundColor
+            border.width: 1
+            border.color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.7)
+            PlasmaComponents.Label {
+                anchors.centerIn: parent
+                text: root.def.letter
+                font.pixelSize: Math.max(7, Math.round(parent.d * 0.62))
+                font.bold: true
             }
         }
     }
 
     fullRepresentation: PlasmaExtras.Representation {
-        Layout.preferredWidth: Kirigami.Units.gridUnit * 22
-        Layout.preferredHeight: Kirigami.Units.gridUnit * (3 + root.disks.length * 2.2)
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 18
+        Layout.preferredWidth: Kirigami.Units.gridUnit * 20
+        Layout.preferredHeight: Kirigami.Units.gridUnit * 10
+        Layout.minimumWidth: Kirigami.Units.gridUnit * 16
 
         header: PlasmaExtras.PlasmoidHeading {
             RowLayout {
                 anchors.fill: parent
+                Kirigami.Icon {
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+                    source: root.def.source === "/" ? "computer" : "drive-harddisk"
+                }
                 Kirigami.Heading {
                     level: 3
-                    text: "Discos"
+                    text: root.def.name
                     Layout.fillWidth: true
                 }
                 PlasmaComponents.Label {
                     opacity: 0.8
-                    text: root.formatBytes(root.totalAvail) + " libres en total"
+                    text: Math.round(root.busy) + "% de actividad"
                 }
             }
         }
 
-        ColumnLayout {
+        GridLayout {
             anchors.fill: parent
-            anchors.margins: Kirigami.Units.smallSpacing
-            spacing: Kirigami.Units.smallSpacing
+            anchors.margins: Kirigami.Units.smallSpacing * 2
+            columns: 3
+            columnSpacing: Kirigami.Units.smallSpacing * 2
+            rowSpacing: Kirigami.Units.smallSpacing * 2
 
-            Repeater {
-                model: root.disks
-                delegate: RowLayout {
-                    required property var modelData
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: Kirigami.Units.gridUnit * 2
-                    spacing: Kirigami.Units.smallSpacing * 2
-
-                    Kirigami.Icon {
-                        Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
-                        Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
-                        source: modelData.source.startsWith("/dev/") ? "drive-harddisk" : (modelData.source === "/" ? "computer" : "drive-harddisk")
-                    }
-                    PlasmaComponents.Label {
-                        text: modelData.name
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
-                        elide: Text.ElideRight
-                    }
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: Kirigami.Units.gridUnit * 0.5
-                        radius: height / 2
-                        color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.15)
-                        Rectangle {
-                            anchors.left: parent.left
-                            anchors.top: parent.top
-                            anchors.bottom: parent.bottom
-                            width: parent.width * root.usedFraction(modelData)
-                            radius: parent.radius
-                            color: root.barColor(modelData)
-                        }
-                    }
-                    PlasmaComponents.Label {
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 8
-                        horizontalAlignment: Text.AlignRight
-                        text: modelData.size > 0
-                            ? root.formatBytes(modelData.avail) + " libres de " + root.formatBytes(modelData.size)
-                            : "sin datos"
-                        opacity: 0.8
-                    }
+            PlasmaComponents.Label { text: "Espacio" }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 0.5
+                radius: height / 2
+                color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.15)
+                Rectangle {
+                    anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                    width: parent.width * root.usedFraction
+                    radius: parent.radius
+                    color: root.spaceColor
                 }
             }
+            PlasmaComponents.Label {
+                opacity: 0.8
+                text: root.size > 0 ? root.formatBytes(root.avail) + " libres de " + root.formatBytes(root.size) : "sin datos"
+            }
 
-            Item { Layout.fillHeight: true }
+            PlasmaComponents.Label { text: "Actividad" }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 0.5
+                radius: height / 2
+                color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.15)
+                Rectangle {
+                    anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                    width: parent.width * root.busy / 100
+                    radius: parent.radius
+                    color: root.busyColor
+                }
+            }
+            PlasmaComponents.Label {
+                opacity: 0.8
+                text: Math.round(root.busy) + "%"
+            }
+
+            PlasmaComponents.Label { text: "Lectura" }
+            PlasmaComponents.Label {
+                Layout.columnSpan: 2
+                opacity: 0.8
+                text: root.formatRate(root.readRate)
+            }
+
+            PlasmaComponents.Label { text: "Escritura" }
+            PlasmaComponents.Label {
+                Layout.columnSpan: 2
+                opacity: 0.8
+                text: root.formatRate(root.writeRate)
+            }
+
+            Item { Layout.fillHeight: true; Layout.columnSpan: 3 }
         }
     }
 }
