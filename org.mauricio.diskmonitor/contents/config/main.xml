@@ -5,6 +5,8 @@
     <!-- Disco que muestra esta instancia: letra|nombre|origen.
          origen = punto de montaje (se lee con df) o /dev/... NTFS sin montar (se lee con ntfsinfo). -->
     <entry name="disk" type="String"><default>S|Sistema|/</default></entry>
+    <!-- PARTUUID de la partición que dibuja el gráfico. Vacío = la de origen. -->
+    <entry name="graphPart" type="String"><default></default></entry>
     <!-- Porcentaje libre por debajo del cual el relleno pasa a ámbar / rojo -->
     <entry name="warnPercent" type="Int"><default>20</default></entry>
     <entry name="critPercent" type="Int"><default>10</default></entry>
