@@ -18,6 +18,9 @@ PlasmoidItem {
     readonly property bool isGpu: mode === "gpu"
     readonly property color accent: Plasmoid.configuration.color
     readonly property real percent: sensor.value || 0
+    // Último minuto de uso, una muestra cada 2 s.
+    property var history: []
+    property var vramHistory: []
 
     // Lista agrupada por programa: [{name, count, value}]
     property var processes: []
@@ -28,12 +31,36 @@ PlasmoidItem {
     readonly property string label: isCpu ? "CPU" : (isGpu ? "GPU" : "Memoria")
     Plasmoid.title: "Procesos por " + label
     toolTipMainText: label
-    toolTipSubText: Math.round(percent) + "% en uso"
+    property real vramSensorUsed: 0
+    property real vramSensorTotal: 0
+    readonly property real vramPercent: vramSensorTotal > 0 ? 100 * vramSensorUsed / vramSensorTotal : 0
+    readonly property string vramHeader: {
+        const totalBytes = vramSensorTotal > 0 ? vramSensorTotal : vramTotal * 1048576
+        const usedBytes = vramSensorTotal > 0 ? vramSensorUsed : vramUsed * 1048576
+        return Math.round(percent) + "% en uso · VRAM " + Math.round(vramPercent) + "% · " + formatMem(usedBytes / 1024) + " de " + formatMem(totalBytes / 1024)
+    }
+    toolTipSubText: isGpu
+        ? Math.round(percent) + "% en uso · VRAM " + Math.round(vramPercent) + "%"
+        : Math.round(percent) + "% en uso"
 
     Sensors.Sensor {
         id: sensor
         sensorId: root.isCpu ? "cpu/all/usage" : (root.isGpu ? "gpu/all/usage" : "memory/physical/usedPercent")
         updateRateLimit: 2000
+    }
+    Sensors.Sensor {
+        id: vramUsedSensor
+        sensorId: "gpu/all/usedVram"
+        updateRateLimit: 2000
+        enabled: root.isGpu
+        onValueChanged: root.vramSensorUsed = value || 0
+    }
+    Sensors.Sensor {
+        id: vramTotalSensor
+        sensorId: "gpu/all/totalVram"
+        updateRateLimit: 2000
+        enabled: root.isGpu
+        onValueChanged: root.vramSensorTotal = value || 0
     }
 
     Sensors.Sensor {
@@ -136,6 +163,27 @@ PlasmoidItem {
         onTriggered: root.refresh()
     }
 
+    Timer {
+        interval: 2000
+        repeat: true
+        triggeredOnStart: true
+        running: true
+        onTriggered: {
+            const next = root.history.slice()
+            next.push(Math.max(0, root.percent))
+            if (next.length > 30)
+                next.shift()
+            root.history = next
+            if (!root.isGpu)
+                return
+            const vram = root.vramHistory.slice()
+            vram.push(Math.max(0, Math.min(100, root.vramPercent)))
+            if (vram.length > 30)
+                vram.shift()
+            root.vramHistory = vram
+        }
+    }
+
     compactRepresentation: MouseArea {
         id: compact
         Layout.minimumWidth: height
@@ -201,9 +249,9 @@ PlasmoidItem {
 
     fullRepresentation: PlasmaExtras.Representation {
         Layout.preferredWidth: Kirigami.Units.gridUnit * 24
-        Layout.preferredHeight: Kirigami.Units.gridUnit * 28
+        Layout.preferredHeight: Kirigami.Units.gridUnit * 32
         Layout.minimumWidth: Kirigami.Units.gridUnit * 18
-        Layout.minimumHeight: Kirigami.Units.gridUnit * 14
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 20
 
         header: PlasmaExtras.PlasmoidHeading {
             RowLayout {
@@ -218,14 +266,39 @@ PlasmoidItem {
                     text: root.isCpu
                         ? Math.round(root.percent) + "% en uso"
                         : root.isGpu
-                        ? Math.round(root.percent) + "% en uso · VRAM " + root.formatMem(root.vramUsed * 1024) + " de " + root.formatMem(root.vramTotal * 1024)
+                        ? root.vramHeader
                         : root.formatMem((memUsed.value || 0) / 1024) + " de " + root.formatMem((memTotal.value || 0) / 1024)
                 }
             }
         }
 
-        PlasmaComponents.ScrollView {
+        ColumnLayout {
             anchors.fill: parent
+            anchors.margins: Kirigami.Units.smallSpacing
+
+            HistoryChart {
+                Layout.fillWidth: true
+                valuesA: root.history
+                nameA: "Uso"
+                textA: Math.round(root.percent) + "%"
+                colorA: root.accent
+                yMax: 100
+                unit: "%"
+            }
+            HistoryChart {
+                visible: root.isGpu
+                Layout.fillWidth: true
+                valuesA: root.vramHistory
+                nameA: "VRAM"
+                textA: Math.round(root.vramPercent) + "%"
+                colorA: "#5dade2"
+                yMax: 100
+                unit: "%"
+            }
+
+        PlasmaComponents.ScrollView {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
 
             ListView {
                 id: list
@@ -297,6 +370,7 @@ PlasmoidItem {
                     text: "Cargando…"
                 }
             }
+        }
         }
     }
 }

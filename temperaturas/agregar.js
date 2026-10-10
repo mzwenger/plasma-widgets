@@ -8,10 +8,24 @@ function set(group, values) {
     for (var k in values) w.writeConfig(k, values[k]);
 }
 
-set([], { CurrentPreset: "org.kde.plasma.systemmonitor", popupHeight: 315, popupWidth: 201 });
+set([], { CurrentPreset: "org.kde.plasma.systemmonitor", popupHeight: 380, popupWidth: 440 });
+// Las barras de la barra salen de esta cara. El desplegable lo reemplaza la copia local del applet.
 set(["Appearance"], { chartFace: "org.kde.ksysguard.barchart", title: "Temperaturas" });
 set(["FaceConfig"], { rangeAuto: false, rangeFrom: 0, rangeTo: 100 });
-set(["org.kde.ksysguard.barchart", "General"], { rangeAuto: false, rangeFrom: 0, rangeTo: 100 });
+set(["org.kde.ksysguard.linechart", "General"], {
+    historyAmount: 60,
+    rangeAutoY: false,
+    rangeFromY: 0,
+    rangeToY: 100,
+    rangeFromYMultiplier: 1,
+    rangeToYMultiplier: 1,
+    lineChartStacked: false,
+    lineChartSmooth: true,
+    lineChartFillOpacity: 20,
+    showLegend: true,
+    showGridLines: true,
+    showYAxisLabels: true
+});
 
 // Sensores: id -> [etiqueta, color RGB]. Los ids "lmsensors/..." dependen del hardware de este equipo.
 var sensors = [

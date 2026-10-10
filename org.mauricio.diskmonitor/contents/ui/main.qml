@@ -30,6 +30,9 @@ PlasmoidItem {
     property real readRate: 0
     property real writeRate: 0
     property var prev: null
+    // Último minuto de caudal, en MB/s. Una muestra cada 2 s.
+    property var readHistory: []
+    property var writeHistory: []
 
     readonly property bool spaceKnown: size > 0 && avail >= 0
     readonly property real usedFraction: spaceKnown ? 1 - avail / size : 0
@@ -159,7 +162,22 @@ PlasmoidItem {
         if (activityDev !== row.kname) {
             activityDev = row.kname
             prev = null
+            readHistory = []
+            writeHistory = []
         }
+    }
+
+    function rememberRate() {
+        const reads = readHistory.slice()
+        const writes = writeHistory.slice()
+        reads.push(readRate / 1048576)
+        writes.push(writeRate / 1048576)
+        if (reads.length > 30)
+            reads.shift()
+        if (writes.length > 30)
+            writes.shift()
+        readHistory = reads
+        writeHistory = writes
     }
 
     function choose(partId) {
@@ -178,6 +196,7 @@ PlasmoidItem {
             busy = Math.max(0, Math.min(100, (now.ticks - prev.ticks) / (dt * 10)))
             readRate = Math.max(0, (now.sr - prev.sr) * 512 / dt)
             writeRate = Math.max(0, (now.sw - prev.sw) * 512 / dt)
+            rememberRate()
         }
         prev = now
     }
@@ -316,8 +335,9 @@ PlasmoidItem {
     fullRepresentation: PlasmaExtras.Representation {
         Layout.preferredWidth: Kirigami.Units.gridUnit * 28
         Layout.minimumWidth: Kirigami.Units.gridUnit * 24
-        Layout.preferredHeight: Kirigami.Units.gridUnit * (14 + Math.max(partModel.count, 1) * 3)
-        Layout.minimumHeight: Kirigami.Units.gridUnit * (14 + Math.max(partModel.count, 1) * 3)
+        // Mismo alto que un disco de dos particiones. Si hay más, la lista se desplaza.
+        Layout.preferredHeight: Kirigami.Units.gridUnit * 27
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 27
 
         header: PlasmaExtras.PlasmoidHeading {
             RowLayout {
@@ -383,19 +403,37 @@ PlasmoidItem {
                 }
             }
 
+            HistoryChart {
+                Layout.fillWidth: true
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                showB: true
+                valuesA: root.readHistory
+                valuesB: root.writeHistory
+                nameA: "Entrada"
+                nameB: "Salida"
+                textA: root.formatRate(root.readRate)
+                textB: root.formatRate(root.writeRate)
+                floor: 1
+                unit: "MB/s"
+            }
+
             PlasmaComponents.Label {
                 text: "Particiones"
                 font.bold: true
                 Layout.topMargin: Kirigami.Units.smallSpacing
             }
 
-            Column {
-                id: partList
+            PlasmaComponents.ScrollView {
                 Layout.fillWidth: true
+                Layout.fillHeight: true
+
+            ListView {
+                id: partList
+                model: partModel
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
                 spacing: Kirigami.Units.smallSpacing
 
-            Repeater {
-                model: partModel
                 delegate: RowLayout {
                     width: partList.width
                     spacing: Kirigami.Units.smallSpacing
@@ -437,8 +475,6 @@ PlasmoidItem {
                 }
             }
             }
-
-            Item { Layout.fillHeight: true }
         }
     }
 }
