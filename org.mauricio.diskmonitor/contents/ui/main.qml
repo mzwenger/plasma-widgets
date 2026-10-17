@@ -58,6 +58,23 @@ PlasmoidItem {
             u = decodeURIComponent(u.substring(7))
         return u
     }
+    readonly property string topScript: {
+        let u = Qt.resolvedUrl("../code/disk-top.py").toString()
+        if (u.startsWith("file://"))
+            u = decodeURIComponent(u.substring(7))
+        return u
+    }
+
+    // Quién movió bytes en el disco. ready=false: todavía no hay ventana medida.
+    property bool topReady: false
+    property bool topIdle: false
+    // La tabla de particiones mide lo que ocupa. El resto de la ventana es quién usa el disco.
+    readonly property real partListHeight: {
+        if (partModel.count <= 0)
+            return 0
+        const row = Kirigami.Units.gridUnit * 1.8
+        return Math.min(partModel.count * row, Kirigami.Units.gridUnit * 6)
+    }
 
     Plasmoid.title: def.name
     toolTipMainText: def.name
@@ -68,6 +85,10 @@ PlasmoidItem {
     // Todas las particiones del disco, cada 60 s
     readonly property string listCommand: "/usr/bin/python3 " + shellQuote(scriptFile) + " " + quoted + " " + shellQuote(def.name)
 
+    // Los 5 que más bytes movieron en el disco entero. Solo con el popup abierto.
+    readonly property string topCommand: "/usr/bin/python3 -B " + shellQuote(topScript) + " "
+        + (activityDev ? shellQuote(activityDev) : quoted)
+
     // Actividad de la partición marcada. Antes de la primera lista, la del origen.
     readonly property string activityCommand: activityDev
         ? "awk -v d=" + shellQuote(activityDev) + " '$3==d{print $6, $10, $13}' /proc/diskstats; cut -d' ' -f1 /proc/uptime"
@@ -75,6 +96,7 @@ PlasmoidItem {
           + "awk -v d=\"$d\" '$3==d{print $6, $10, $13}' /proc/diskstats; cut -d' ' -f1 /proc/uptime"
 
     ListModel { id: partModel }
+    ListModel { id: topModel }
 
     P5Support.DataSource {
         id: executable
@@ -85,6 +107,7 @@ PlasmoidItem {
             const out = data["stdout"] || ""
             if (source === root.listCommand) root.parseList(out)
             else if (source === root.activityCommand) root.parseActivity(out)
+            else if (source === root.topCommand) root.parseTop(out)
         }
     }
 
@@ -186,6 +209,40 @@ PlasmoidItem {
         applySelection()
     }
 
+    function parseTop(out) {
+        let data
+        try {
+            data = JSON.parse(out)
+        } catch (e) {
+            return
+        }
+        if (!data || !data.ready) {
+            if (topModel.count === 0)
+                topReady = false
+            return
+        }
+        topReady = true
+        topIdle = !!data.idle
+        const incoming = data.rows || []
+        topModel.clear()
+        for (let i = 0; i < incoming.length; i++) {
+            const row = incoming[i]
+            topModel.append({
+                name: row.name || "",
+                pct: row.pct || 0,
+                peak: row.peak || 0,
+                now: row.now || 0,
+                rate: row.rate || 0
+            })
+        }
+    }
+
+    function topShareText(pct, rate) {
+        const share = pct < 1 ? "<1%" : (pct >= 10 ? Math.round(pct) + "%" : pct.toFixed(1) + "%")
+        const speed = formatRate(rate)
+        return speed === "0 MB/s" ? share : share + " · " + speed
+    }
+
     function parseActivity(out) {
         const lines = out.trim().split("\n")
         if (lines.length < 2) return
@@ -250,6 +307,13 @@ PlasmoidItem {
         triggeredOnStart: true
         running: true
         onTriggered: root.run(root.activityCommand)
+    }
+    Timer {
+        interval: 2000
+        repeat: true
+        triggeredOnStart: true
+        running: root.expanded
+        onTriggered: root.run(root.topCommand)
     }
     onExpandedChanged: if (expanded) run(listCommand)
 
@@ -425,7 +489,9 @@ PlasmoidItem {
 
             PlasmaComponents.ScrollView {
                 Layout.fillWidth: true
-                Layout.fillHeight: true
+                implicitHeight: root.partListHeight
+                Layout.preferredHeight: root.partListHeight
+                Layout.maximumHeight: root.partListHeight
 
             ListView {
                 id: partList
@@ -474,6 +540,87 @@ PlasmoidItem {
                     }
                 }
             }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: Kirigami.Units.smallSpacing
+
+                PlasmaComponents.Label {
+                    text: "Quién usa el disco"
+                    font.bold: true
+                    Layout.topMargin: Kirigami.Units.smallSpacing
+                }
+                PlasmaComponents.Label {
+                    visible: topModel.count === 0
+                    Layout.fillHeight: true
+                    opacity: 0.6
+                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    verticalAlignment: Text.AlignVCenter
+                    text: root.topReady && !root.topIdle ? "Sin detalle" : (root.topReady ? "Sin movimiento" : "Midiendo…")
+                }
+                Repeater {
+                    model: topModel
+                    delegate: ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Math.max(2, Kirigami.Units.smallSpacing / 2)
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            PlasmaComponents.Label {
+                                text: model.name
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                            }
+                            PlasmaComponents.Label {
+                                text: root.topShareText(model.pct, model.rate)
+                                opacity: 0.8
+                                horizontalAlignment: Text.AlignRight
+                                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                                Layout.preferredWidth: Kirigami.Units.gridUnit * 8
+                                elide: Text.ElideRight
+                            }
+                        }
+                        // Azul: promedio del minuto. Raya clara encima: el instante. Marca naranja: el pico.
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Kirigami.Units.gridUnit * 0.8
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: parent.width
+                                height: Math.max(4, parent.height * 0.55)
+                                radius: height / 2
+                                color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.15)
+                                Rectangle {
+                                    anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                                    width: parent.width * Math.max(0, Math.min(100, model.pct)) / 100
+                                    radius: parent.radius
+                                    color: "#3daee9"
+                                }
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                    width: parent.width * Math.max(0, Math.min(100, model.now)) / 100
+                                    height: Math.max(2, parent.height * 0.4)
+                                    radius: height / 2
+                                    color: Kirigami.Theme.textColor
+                                }
+                            }
+                            Rectangle {
+                                visible: model.peak >= 1
+                                width: 3
+                                height: parent.height
+                                radius: 1
+                                anchors.verticalCenter: parent.verticalCenter
+                                x: Math.max(0, Math.min(parent.width - width, parent.width * Math.max(0, Math.min(100, model.peak)) / 100 - width / 2))
+                                color: "#e67e22"
+                            }
+                        }
+                    }
+                }
+                Item { Layout.fillHeight: true }
             }
         }
     }

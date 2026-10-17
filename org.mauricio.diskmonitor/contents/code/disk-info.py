@@ -201,6 +201,19 @@ def title_and_type(node, is_default, widget_name):
     return title, type_label
 
 
+def mounted_usage(node):
+    # lsblk pone primero los bind de Docker en /var/lib/docker. Ese directorio
+    # no es legible, df falla y la partición quedaba con tamaño pero sin uso.
+    # datos-nvme también está en /mnt/datos-nvme: se prueba ese montaje.
+    mounts = mountpoints(node)
+    mounts.sort(key=lambda mount: (mount.startswith("/var/lib/docker/"), len(mount)))
+    for mount in mounts:
+        got = df_size_free(mount)
+        if got:
+            return got
+    return None
+
+
 def space_of(node, part_size):
     path = os.path.realpath(node.get("path"))
     fstype = node.get("fstype") or ""
@@ -209,11 +222,10 @@ def space_of(node, part_size):
         if got:
             return got
         return part_size, None
-    mounts = mountpoints(node)
-    if mounts:
-        got = df_size_free(mounts[0])
-        if got:
-            return got
+    got = mounted_usage(node)
+    if got:
+        return got
+    if mountpoints(node):
         return part_size, None
     if fstype == "ntfs":
         got = ntfs_size_free(path)
