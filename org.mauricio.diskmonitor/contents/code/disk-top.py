@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quién movió bytes en un disco desde la muestra anterior.
+"""Quién movió bytes en un disco, como promedio del último minuto.
 
 Uso: disk-top.py DEVICE
 DEVICE es un nombre del kernel (nvme0n1p2), una ruta /dev o un punto de montaje.
@@ -9,6 +9,10 @@ los discos y no se puede leer en los procesos de Docker. La contabilidad que sí
 sirve es la del grupo de procesos (cgroup), en io.stat, y está en el disco
 entero: una partición se resuelve a su disco. La sesión del usuario es un solo
 grupo; cada contenedor es el suyo.
+
+El porcentaje y la velocidad son el promedio del último minuto. peak es el
+máximo de una muestra de ese minuto. La lista guarda hasta cinco nombres: uno
+sale solo si otro tiene un promedio claramente mayor.
 
 Imprime un JSON. La primera vez, o si la muestra anterior tiene más de 5 s,
 mide un segundo y responde con esa ventana. Errores a stderr.
@@ -24,6 +28,9 @@ import time
 MIN_BYTES = 64 * 1024
 MAX_GAP = 5.0
 FRESH_WAIT = 1.0
+WINDOW_SECONDS = 60.0
+# Un recién llegado reemplaza al más bajo solo si lo supera por este margen.
+REPLACE_MARGIN = 1.0
 CACHE = pathlib.Path.home() / ".cache" / "plasma-diskmonitor"
 
 # Procesos que arrancan el contenedor y no dicen qué está corriendo.
@@ -145,13 +152,23 @@ def load_state(path):
         return None
     if "t" not in data or "sectors" not in data:
         return None
+    if not isinstance(data.get("samples"), list):
+        data["samples"] = []
+    if not isinstance(data.get("members"), list):
+        data["members"] = []
     return data
 
 
-def save_state(path, when, sectors, groups):
+def save_state(path, when, sectors, groups, samples, members):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"t": when, "sectors": sectors, "groups": groups}))
+    tmp.write_text(json.dumps({
+        "t": when,
+        "sectors": sectors,
+        "groups": groups,
+        "samples": samples,
+        "members": members,
+    }))
     tmp.replace(path)
 
 
@@ -261,59 +278,144 @@ def label(rel, names):
     return leader_comm(rel) or base
 
 
-def build_rows(prev, when, sectors, groups):
+def interval_deltas(prev, when, sectors, groups):
     dt = when - float(prev["t"])
     if dt <= 0:
-        return [], True
+        return None
     disk_delta = (sectors - int(prev["sectors"])) * 512
     if disk_delta < 0:
         disk_delta = 0
     prev_groups = prev["groups"]
-    deltas = []
+    moved = {}
     for key, total in groups.items():
         if key not in prev_groups:
             continue
         delta = int(total) - int(prev_groups[key])
         if delta > 0:
-            deltas.append((delta, key))
-    deltas.sort(reverse=True)
-    accounted = sum(delta for delta, _key in deltas)
-    denom = disk_delta if disk_delta > 0 else accounted
-    if denom < MIN_BYTES:
+            moved[key] = delta
+    return dt, disk_delta, moved
+
+
+def trim_window(samples, now):
+    """Solo muestras cuyo final cae dentro del último minuto."""
+    cutoff = float(now) - WINDOW_SECONDS
+    return [sample for sample in samples if float(sample.get("t") or 0) >= cutoff]
+
+
+def instant_pct(sample, key):
+    disk = int(sample.get("disk") or 0)
+    if disk < MIN_BYTES:
+        return 0.0
+    return min(100.0, 100.0 * int(sample.get("groups", {}).get(key) or 0) / disk)
+
+
+def stats_for(samples):
+    keys = set()
+    for sample in samples:
+        keys.update(sample.get("groups") or {})
+    total_dt = sum(float(sample.get("dt") or 0) for sample in samples)
+    out = {}
+    for key in keys:
+        total_bytes = sum(int((sample.get("groups") or {}).get(key) or 0) for sample in samples)
+        weighted = 0.0
+        peak = 0.0
+        for sample in samples:
+            instant = instant_pct(sample, key)
+            weighted += instant * float(sample.get("dt") or 0)
+            if instant > peak:
+                peak = instant
+        out[key] = {
+            "pct": (weighted / total_dt) if total_dt > 0 else 0.0,
+            "rate": (total_bytes / total_dt) if total_dt > 0 else 0.0,
+            "peak": peak,
+        }
+    return out
+
+
+def pct_of(stats, key):
+    row = stats.get(key)
+    if not row:
+        return 0.0
+    return float(row["pct"])
+
+
+def update_members(members, stats):
+    """Hasta cinco nombres. Uno quieto se queda si nadie lo supera con margen."""
+    kept = []
+    seen = set()
+    for key in members:
+        if isinstance(key, str) and key not in seen:
+            kept.append(key)
+            seen.add(key)
+    for key in sorted(stats, key=lambda item: pct_of(stats, item), reverse=True):
+        if len(kept) >= 5:
+            break
+        if key in seen or pct_of(stats, key) < 1:
+            continue
+        kept.append(key)
+        seen.add(key)
+    for _turn in range(5):
+        if not kept:
+            break
+        weakest = min(kept, key=lambda item: pct_of(stats, item))
+        floor = pct_of(stats, weakest) + REPLACE_MARGIN
+        outsider = None
+        for key, row in stats.items():
+            if key in seen or row["pct"] < floor:
+                continue
+            if outsider is None or row["pct"] > pct_of(stats, outsider):
+                outsider = key
+        if outsider is None:
+            break
+        kept.remove(weakest)
+        seen.discard(weakest)
+        kept.append(outsider)
+        seen.add(outsider)
+    return kept
+
+
+def rows_from(members, stats, latest):
+    if not members:
         return [], True
-    chosen = []
-    for delta, key in deltas:
-        pct = min(100.0, 100.0 * delta / denom)
-        if pct < 1:
-            break
-        chosen.append((delta, key, pct))
-        if len(chosen) == 5:
-            break
-    if not chosen and deltas:
-        delta, key = deltas[0]
-        chosen.append((delta, key, min(100.0, 100.0 * delta / denom)))
-    if not chosen:
-        return [], False
     needs_docker = False
-    for _delta, key, _pct in chosen:
+    for key in members:
         base = key.rsplit("/", 1)[-1]
         if base.startswith("docker-") and base.endswith(".scope"):
             needs_docker = True
             break
     names = docker_names() if needs_docker else {}
+    ordered = sorted(members, key=lambda key: (-pct_of(stats, key), key))
     rows = []
-    for delta, key, pct in chosen:
+    for key in ordered:
+        row = stats.get(key) or {"pct": 0.0, "rate": 0.0, "peak": 0.0}
         rows.append({
             "name": label(key, names),
-            "pct": round(pct, 1),
-            "rate": delta / dt,
+            "pct": round(row["pct"], 1),
+            "peak": round(row["peak"], 1),
+            "now": round(instant_pct(latest, key), 1) if latest else 0.0,
+            "rate": row["rate"],
         })
     return rows, False
 
 
-def answer(prev, when, sectors, groups, disk):
-    rows, idle = build_rows(prev, when, sectors, groups)
-    return {"ready": True, "idle": idle, "disk": disk, "rows": rows}
+def absorb(prev, when, sectors, groups):
+    samples = [sample for sample in (prev.get("samples") or []) if isinstance(sample, dict)]
+    members = [key for key in (prev.get("members") or []) if isinstance(key, str)]
+    got = interval_deltas(prev, when, sectors, groups)
+    if got is not None and 0 < got[0] <= MAX_GAP:
+        dt, disk, moved = got
+        samples.append({
+            "t": round(when, 3),
+            "dt": round(dt, 3),
+            "disk": int(disk),
+            "groups": moved,
+        })
+    samples = trim_window(samples, when)
+    stats = stats_for(samples)
+    members = update_members(members, stats)
+    latest = samples[-1] if samples else None
+    rows, idle = rows_from(members, stats, latest)
+    return samples, members, rows, idle
 
 
 def main():
@@ -334,17 +436,21 @@ def main():
         emit({"ready": False, "idle": False, "disk": disk, "rows": []})
         return
     if prev is not None and gap is not None and 0.4 <= gap <= MAX_GAP:
-        save_state(path, when, sectors, groups)
-        emit(answer(prev, when, sectors, groups, disk))
+        samples, members, rows, idle = absorb(prev, when, sectors, groups)
+        save_state(path, when, sectors, groups, samples, members)
+        emit({"ready": True, "idle": idle, "disk": disk, "rows": rows})
         return
     # Sin base reciente: medir una ventana corta y responder en esta llamada.
-    save_state(path, when, sectors, groups)
+    # El minuto anterior no sirve: se descarta.
+    base = {"t": when, "sectors": sectors, "groups": groups, "samples": [], "members": []}
+    save_state(path, when, sectors, groups, [], [])
     time.sleep(FRESH_WAIT)
     when2, sectors2, groups2 = sample(disk, dev)
     if sectors2 is None:
         raise RuntimeError("no está en diskstats: " + disk)
-    save_state(path, when2, sectors2, groups2)
-    emit(answer({"t": when, "sectors": sectors, "groups": groups}, when2, sectors2, groups2, disk))
+    samples, members, rows, idle = absorb(base, when2, sectors2, groups2)
+    save_state(path, when2, sectors2, groups2, samples, members)
+    emit({"ready": True, "idle": idle, "disk": disk, "rows": rows})
 
 
 if __name__ == "__main__":

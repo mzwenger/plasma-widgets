@@ -68,6 +68,13 @@ PlasmoidItem {
     // Quién movió bytes en el disco. ready=false: todavía no hay ventana medida.
     property bool topReady: false
     property bool topIdle: false
+    // La tabla de particiones mide lo que ocupa. El resto de la ventana es quién usa el disco.
+    readonly property real partListHeight: {
+        if (partModel.count <= 0)
+            return 0
+        const row = Kirigami.Units.gridUnit * 1.8
+        return Math.min(partModel.count * row, Kirigami.Units.gridUnit * 6)
+    }
 
     Plasmoid.title: def.name
     toolTipMainText: def.name
@@ -223,6 +230,8 @@ PlasmoidItem {
             topModel.append({
                 name: row.name || "",
                 pct: row.pct || 0,
+                peak: row.peak || 0,
+                now: row.now || 0,
                 rate: row.rate || 0
             })
         }
@@ -480,7 +489,9 @@ PlasmoidItem {
 
             PlasmaComponents.ScrollView {
                 Layout.fillWidth: true
-                Layout.fillHeight: true
+                implicitHeight: root.partListHeight
+                Layout.preferredHeight: root.partListHeight
+                Layout.maximumHeight: root.partListHeight
 
             ListView {
                 id: partList
@@ -531,52 +542,85 @@ PlasmoidItem {
             }
             }
 
-            PlasmaComponents.Label {
-                text: "Quién usa el disco"
-                font.bold: true
-                Layout.topMargin: Kirigami.Units.smallSpacing
-            }
-            PlasmaComponents.Label {
-                visible: topModel.count === 0
-                opacity: 0.6
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                text: root.topReady && !root.topIdle ? "Sin detalle" : (root.topReady ? "Sin movimiento" : "Midiendo…")
-            }
-            Repeater {
-                model: topModel
-                delegate: RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Kirigami.Units.smallSpacing
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: Kirigami.Units.smallSpacing
 
-                    Rectangle {
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 3.5
-                        Layout.preferredHeight: Math.max(4, Kirigami.Units.gridUnit * 0.35)
-                        Layout.alignment: Qt.AlignVCenter
-                        radius: height / 2
-                        color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.15)
-                        Rectangle {
-                            anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
-                            width: parent.width * Math.max(0, Math.min(100, model.pct)) / 100
-                            radius: parent.radius
-                            color: "#3daee9"
+                PlasmaComponents.Label {
+                    text: "Quién usa el disco"
+                    font.bold: true
+                    Layout.topMargin: Kirigami.Units.smallSpacing
+                }
+                PlasmaComponents.Label {
+                    visible: topModel.count === 0
+                    Layout.fillHeight: true
+                    opacity: 0.6
+                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    verticalAlignment: Text.AlignVCenter
+                    text: root.topReady && !root.topIdle ? "Sin detalle" : (root.topReady ? "Sin movimiento" : "Midiendo…")
+                }
+                Repeater {
+                    model: topModel
+                    delegate: ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Math.max(2, Kirigami.Units.smallSpacing / 2)
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            PlasmaComponents.Label {
+                                text: model.name
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                            }
+                            PlasmaComponents.Label {
+                                text: root.topShareText(model.pct, model.rate)
+                                opacity: 0.8
+                                horizontalAlignment: Text.AlignRight
+                                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                                Layout.preferredWidth: Kirigami.Units.gridUnit * 8
+                                elide: Text.ElideRight
+                            }
+                        }
+                        // Azul: promedio del minuto. Raya clara encima: el instante. Marca naranja: el pico.
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Kirigami.Units.gridUnit * 0.8
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: parent.width
+                                height: Math.max(4, parent.height * 0.55)
+                                radius: height / 2
+                                color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.15)
+                                Rectangle {
+                                    anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                                    width: parent.width * Math.max(0, Math.min(100, model.pct)) / 100
+                                    radius: parent.radius
+                                    color: "#3daee9"
+                                }
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                    width: parent.width * Math.max(0, Math.min(100, model.now)) / 100
+                                    height: Math.max(2, parent.height * 0.4)
+                                    radius: height / 2
+                                    color: Kirigami.Theme.textColor
+                                }
+                            }
+                            Rectangle {
+                                visible: model.peak >= 1
+                                width: 3
+                                height: parent.height
+                                radius: 1
+                                anchors.verticalCenter: parent.verticalCenter
+                                x: Math.max(0, Math.min(parent.width - width, parent.width * Math.max(0, Math.min(100, model.peak)) / 100 - width / 2))
+                                color: "#e67e22"
+                            }
                         }
                     }
-                    PlasmaComponents.Label {
-                        text: model.name
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: Kirigami.Units.gridUnit * 4
-                        elide: Text.ElideRight
-                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                    }
-                    PlasmaComponents.Label {
-                        text: root.topShareText(model.pct, model.rate)
-                        opacity: 0.8
-                        horizontalAlignment: Text.AlignRight
-                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 8
-                        elide: Text.ElideRight
-                    }
                 }
+                Item { Layout.fillHeight: true }
             }
         }
     }
