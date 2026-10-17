@@ -14,8 +14,10 @@ El porcentaje y la velocidad son el promedio del último minuto. peak es el
 máximo de una muestra de ese minuto. La lista guarda hasta cinco nombres: uno
 sale solo si otro tiene un promedio claramente mayor.
 
-Imprime un JSON. La primera vez, o si la muestra anterior tiene más de 5 s,
-mide un segundo y responde con esa ventana. Errores a stderr.
+Imprime un JSON. La primera vez mide un segundo. Si pasó más de 5 s, no
+inventa un delta de ese hueco: conserva el minuto, mueve la base al presente
+y agrega solo el segundo nuevo. Un reinicio descarta el minuto, porque el
+reloj del kernel volvió a cero. Errores a stderr.
 """
 
 import json
@@ -371,12 +373,16 @@ def update_members(members, stats):
         seen.discard(weakest)
         kept.append(outsider)
         seen.add(outsider)
+    if not kept:
+        ranked = sorted(stats, key=lambda item: pct_of(stats, item), reverse=True)
+        if ranked and pct_of(stats, ranked[0]) > 0:
+            kept.append(ranked[0])
     return kept
 
 
 def rows_from(members, stats, latest):
     if not members:
-        return [], True
+        return []
     needs_docker = False
     for key in members:
         base = key.rsplit("/", 1)[-1]
@@ -395,7 +401,7 @@ def rows_from(members, stats, latest):
             "now": round(instant_pct(latest, key), 1) if latest else 0.0,
             "rate": row["rate"],
         })
-    return rows, False
+    return rows
 
 
 def absorb(prev, when, sectors, groups):
@@ -414,8 +420,9 @@ def absorb(prev, when, sectors, groups):
     stats = stats_for(samples)
     members = update_members(members, stats)
     latest = samples[-1] if samples else None
-    rows, idle = rows_from(members, stats, latest)
-    return samples, members, rows, idle
+    rows = rows_from(members, stats, latest)
+    busy = sum(int(sample.get("disk") or 0) for sample in samples) >= MIN_BYTES
+    return samples, members, rows, not rows and not busy
 
 
 def main():
@@ -432,18 +439,29 @@ def main():
     # Entre 0 y 0,4 s es una consulta duplicada: no pisar la muestra.
     # Un hueco negativo es un reinicio: /proc/uptime volvió a cero y el
     # caché sigue con el tiempo del arranque anterior. Hay que medir de nuevo.
+    if prev is not None and gap is not None and gap < 0:
+        # Reinicio: el uptime volvió a cero y las marcas viejas no son de este minuto.
+        prev = None
     if prev is not None and gap is not None and 0 <= gap < 0.4:
         emit({"ready": False, "idle": False, "disk": disk, "rows": []})
         return
-    if prev is not None and gap is not None and 0.4 <= gap <= MAX_GAP:
+    if prev is not None and gap is not None and gap <= MAX_GAP:
         samples, members, rows, idle = absorb(prev, when, sectors, groups)
         save_state(path, when, sectors, groups, samples, members)
         emit({"ready": True, "idle": idle, "disk": disk, "rows": rows})
         return
-    # Sin base reciente: medir una ventana corta y responder en esta llamada.
-    # El minuto anterior no sirve: se descarta.
-    base = {"t": when, "sectors": sectors, "groups": groups, "samples": [], "members": []}
-    save_state(path, when, sectors, groups, [], [])
+    # Sin base, o con un hueco largo. No se guarda nada hasta tener el segundo nuevo:
+    # si esa lectura falla, el minuto anterior sigue en disco.
+    if prev is None:
+        base = {"t": when, "sectors": sectors, "groups": groups, "samples": [], "members": []}
+    else:
+        base = {
+            "t": when,
+            "sectors": sectors,
+            "groups": groups,
+            "samples": trim_window(prev.get("samples") or [], when),
+            "members": [key for key in (prev.get("members") or []) if isinstance(key, str)],
+        }
     time.sleep(FRESH_WAIT)
     when2, sectors2, groups2 = sample(disk, dev)
     if sectors2 is None:
