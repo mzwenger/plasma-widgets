@@ -327,10 +327,13 @@ def main():
         raise RuntimeError("no está en diskstats: " + disk)
     prev = load_state(path)
     gap = None if prev is None else when - float(prev["t"])
-    if prev is not None and gap is not None and gap < 0.4:
+    # Entre 0 y 0,4 s es una consulta duplicada: no pisar la muestra.
+    # Un hueco negativo es un reinicio: /proc/uptime volvió a cero y el
+    # caché sigue con el tiempo del arranque anterior. Hay que medir de nuevo.
+    if prev is not None and gap is not None and 0 <= gap < 0.4:
         emit({"ready": False, "idle": False, "disk": disk, "rows": []})
         return
-    if prev is not None and gap is not None and gap <= MAX_GAP:
+    if prev is not None and gap is not None and 0.4 <= gap <= MAX_GAP:
         save_state(path, when, sectors, groups)
         emit(answer(prev, when, sectors, groups, disk))
         return

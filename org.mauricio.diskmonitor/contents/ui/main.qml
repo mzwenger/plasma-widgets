@@ -532,7 +532,7 @@ PlasmoidItem {
             }
 
             PlasmaComponents.Label {
-                text: "Quién lo usa"
+                text: "Quién usa el disco"
                 font.bold: true
                 Layout.topMargin: Kirigami.Units.smallSpacing
             }
@@ -558,7 +558,7 @@ PlasmoidItem {
                             anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
                             width: parent.width * Math.max(0, Math.min(100, model.pct)) / 100
                             radius: parent.radius
-                            color: root.busyColor
+                            color: "#3daee9"
                         }
                     }
                     PlasmaComponents.Label {
