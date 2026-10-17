@@ -58,6 +58,16 @@ PlasmoidItem {
             u = decodeURIComponent(u.substring(7))
         return u
     }
+    readonly property string topScript: {
+        let u = Qt.resolvedUrl("../code/disk-top.py").toString()
+        if (u.startsWith("file://"))
+            u = decodeURIComponent(u.substring(7))
+        return u
+    }
+
+    // Quién movió bytes en el disco. ready=false: todavía no hay ventana medida.
+    property bool topReady: false
+    property bool topIdle: false
 
     Plasmoid.title: def.name
     toolTipMainText: def.name
@@ -68,6 +78,10 @@ PlasmoidItem {
     // Todas las particiones del disco, cada 60 s
     readonly property string listCommand: "/usr/bin/python3 " + shellQuote(scriptFile) + " " + quoted + " " + shellQuote(def.name)
 
+    // Los 5 que más bytes movieron en el disco entero. Solo con el popup abierto.
+    readonly property string topCommand: "/usr/bin/python3 -B " + shellQuote(topScript) + " "
+        + (activityDev ? shellQuote(activityDev) : quoted)
+
     // Actividad de la partición marcada. Antes de la primera lista, la del origen.
     readonly property string activityCommand: activityDev
         ? "awk -v d=" + shellQuote(activityDev) + " '$3==d{print $6, $10, $13}' /proc/diskstats; cut -d' ' -f1 /proc/uptime"
@@ -75,6 +89,7 @@ PlasmoidItem {
           + "awk -v d=\"$d\" '$3==d{print $6, $10, $13}' /proc/diskstats; cut -d' ' -f1 /proc/uptime"
 
     ListModel { id: partModel }
+    ListModel { id: topModel }
 
     P5Support.DataSource {
         id: executable
@@ -85,6 +100,7 @@ PlasmoidItem {
             const out = data["stdout"] || ""
             if (source === root.listCommand) root.parseList(out)
             else if (source === root.activityCommand) root.parseActivity(out)
+            else if (source === root.topCommand) root.parseTop(out)
         }
     }
 
@@ -186,6 +202,38 @@ PlasmoidItem {
         applySelection()
     }
 
+    function parseTop(out) {
+        let data
+        try {
+            data = JSON.parse(out)
+        } catch (e) {
+            return
+        }
+        if (!data || !data.ready) {
+            if (topModel.count === 0)
+                topReady = false
+            return
+        }
+        topReady = true
+        topIdle = !!data.idle
+        const incoming = data.rows || []
+        topModel.clear()
+        for (let i = 0; i < incoming.length; i++) {
+            const row = incoming[i]
+            topModel.append({
+                name: row.name || "",
+                pct: row.pct || 0,
+                rate: row.rate || 0
+            })
+        }
+    }
+
+    function topShareText(pct, rate) {
+        const share = pct < 1 ? "<1%" : (pct >= 10 ? Math.round(pct) + "%" : pct.toFixed(1) + "%")
+        const speed = formatRate(rate)
+        return speed === "0 MB/s" ? share : share + " · " + speed
+    }
+
     function parseActivity(out) {
         const lines = out.trim().split("\n")
         if (lines.length < 2) return
@@ -250,6 +298,13 @@ PlasmoidItem {
         triggeredOnStart: true
         running: true
         onTriggered: root.run(root.activityCommand)
+    }
+    Timer {
+        interval: 2000
+        repeat: true
+        triggeredOnStart: true
+        running: root.expanded
+        onTriggered: root.run(root.topCommand)
     }
     onExpandedChanged: if (expanded) run(listCommand)
 
@@ -474,6 +529,54 @@ PlasmoidItem {
                     }
                 }
             }
+            }
+
+            PlasmaComponents.Label {
+                text: "Quién lo usa"
+                font.bold: true
+                Layout.topMargin: Kirigami.Units.smallSpacing
+            }
+            PlasmaComponents.Label {
+                visible: topModel.count === 0
+                opacity: 0.6
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                text: root.topReady && !root.topIdle ? "Sin detalle" : (root.topReady ? "Sin movimiento" : "Midiendo…")
+            }
+            Repeater {
+                model: topModel
+                delegate: RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Kirigami.Units.smallSpacing
+
+                    Rectangle {
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 3.5
+                        Layout.preferredHeight: Math.max(4, Kirigami.Units.gridUnit * 0.35)
+                        Layout.alignment: Qt.AlignVCenter
+                        radius: height / 2
+                        color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.15)
+                        Rectangle {
+                            anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                            width: parent.width * Math.max(0, Math.min(100, model.pct)) / 100
+                            radius: parent.radius
+                            color: root.busyColor
+                        }
+                    }
+                    PlasmaComponents.Label {
+                        text: model.name
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: Kirigami.Units.gridUnit * 4
+                        elide: Text.ElideRight
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+                    PlasmaComponents.Label {
+                        text: root.topShareText(model.pct, model.rate)
+                        opacity: 0.8
+                        horizontalAlignment: Text.AlignRight
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 8
+                        elide: Text.ElideRight
+                    }
+                }
             }
         }
     }
