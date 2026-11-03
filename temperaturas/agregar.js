@@ -9,7 +9,8 @@ function set(group, values) {
 }
 
 set([], { CurrentPreset: "org.kde.plasma.systemmonitor", popupHeight: 380, popupWidth: 440 });
-// Las barras de la barra salen de esta cara. El desplegable lo reemplaza la copia local del applet.
+// El panel lo dibuja CompactRepresentation.qml (una barra por highPrioritySensorIds).
+// chartFace queda en barchart para no romper Ajustes; el desplegable es FullRepresentation.qml.
 set(["Appearance"], { chartFace: "org.kde.ksysguard.barchart", title: "Temperaturas" });
 set(["FaceConfig"], { rangeAuto: false, rangeFrom: 0, rangeTo: 100 });
 set(["org.kde.ksysguard.linechart", "General"], {
@@ -27,13 +28,16 @@ set(["org.kde.ksysguard.linechart", "General"], {
     showYAxisLabels: true
 });
 
-// Sensores: id -> [etiqueta, color RGB]. Los ids "lmsensors/..." dependen del hardware de este equipo.
+// Sensores: id -> [etiqueta, color RGB]. Los ids "lmsensors/..." y gpu/gpu0 dependen de este equipo.
+// GPU es gpu/gpu0 (RTX 3090). gpu/gpu1 no existe y dejaba la barra vacía.
+// Discos: pci-0100 = Linux (Samsung 990 PRO), pci-2500 = Windows (XPG). El panel
+// compacto muestra una barra por NVMe (LIN y WIN).
 var sensors = [
-    ["cpu/all/maximumTemperature",       "CPU",                 "231,76,60"],
-    ["lmsensors/nct6795-isa-0a20/temp3", "VRM",                 "243,156,18"],
-    ["gpu/gpu1/temperature",             "GPU",                 "46,204,113"],
-    ["lmsensors/nvme-pci-2500/temp1",    "Disco Linux (ADATA)", "200,200,200"],
-    ["lmsensors/nvme-pci-0100/temp1",    "Disco XPG (Windows)", "200,200,200"]
+    ["cpu/all/maximumTemperature",       "CPU",                   "231,76,60"],
+    ["gpu/gpu0/temperature",             "GPU",                   "46,204,113"],
+    ["lmsensors/nct6795-isa-0a20/temp3", "VRM",                   "243,156,18"],
+    ["lmsensors/nvme-pci-0100/temp1",    "Linux (Samsung)",       "189,195,199"],
+    ["lmsensors/nvme-pci-2500/temp1",    "Windows (XPG)",         "127,140,141"]
 ];
 var labels = {}, colors = {}, ids = [];
 sensors.forEach(function (s) { ids.push(s[0]); labels[s[0]] = s[1]; colors[s[0]] = s[2]; });
@@ -42,3 +46,4 @@ set(["SensorColors"], colors);
 set(["Sensors"], { highPrioritySensorIds: JSON.stringify(ids), lowPrioritySensorIds: "[]", totalSensors: "[]" });
 
 print("Monitor de temperaturas agregado (id " + w.id + ")");
+

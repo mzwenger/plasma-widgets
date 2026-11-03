@@ -1,5 +1,5 @@
 // Desplegable de temperaturas: un gráfico con una línea por sensor, último minuto.
-// La barra sigue usando la cara de barras (chartFace = barchart).
+// El panel compacto dibuja una barra por highPrioritySensorIds (CPU, GPU, VRM, LIN, WIN).
 import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
