@@ -1,4 +1,4 @@
-// Barras de temperatura en el panel: CPU, GPU, VRM, LIN, WIN, con etiqueta vertical.
+// Barras de temperatura en el panel, con etiqueta vertical de 3 letras.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -10,20 +10,46 @@ import org.kde.ksysguard.sensors as Sensors
 Item {
     id: compactRoot
 
-    readonly property var bars: [
-        { label: "CPU", color: "#e74c3c", sensor: "cpu/all/maximumTemperature", tip: "CPU" },
-        { label: "GPU", color: "#2ecc71", sensor: "gpu/gpu0/temperature", tip: "GPU" },
-        { label: "VRM", color: "#f39c12", sensor: "lmsensors/nct6795-isa-0a20/temp3", tip: "VRM" },
-        { label: "LIN", color: "#bdc3c7", sensor: "lmsensors/nvme-pci-0100/temp1", tip: "Linux (Samsung)" },
-        { label: "WIN", color: "#7f8c8d", sensor: "lmsensors/nvme-pci-2500/temp1", tip: "Windows (XPG)" }
-    ]
-    readonly property int barCount: bars.length
+    readonly property var sensorIds: (Plasmoid.faceController && Plasmoid.faceController.highPrioritySensorIds)
+        ? Plasmoid.faceController.highPrioritySensorIds
+        : []
+    readonly property int barCount: Math.max(sensorIds.length, 1)
+    readonly property int gap: 2
     readonly property real rangeTo: 100
 
     Layout.fillHeight: true
-    Layout.minimumWidth: barCount * 12
-    Layout.preferredWidth: barCount * Math.max(14, Math.round(height * 0.32))
-    Layout.maximumWidth: barCount * 22
+    Layout.minimumWidth: barCount * 12 + gap * Math.max(0, barCount - 1)
+    Layout.preferredWidth: barCount * Math.max(14, Math.round(height * 0.32)) + gap * Math.max(0, barCount - 1)
+    Layout.maximumWidth: barCount * 22 + gap * Math.max(0, barCount - 1)
+
+    function colorOf(value) {
+        const text = String(value ?? "")
+        if (text.startsWith("#") || text.startsWith("rgb"))
+            return text
+        const parts = text.split(",")
+        if (parts.length >= 3)
+            return Qt.rgba(parseInt(parts[0], 10) / 255, parseInt(parts[1], 10) / 255, parseInt(parts[2], 10) / 255, 1)
+        return Kirigami.Theme.highlightColor
+    }
+
+    function shortLabel(id) {
+        const labels = (Plasmoid.faceController && Plasmoid.faceController.sensorLabels) ? Plasmoid.faceController.sensorLabels : {}
+        const raw = String(labels[id] || "")
+        const word = raw.split(/\s+/)[0] || ""
+        const letters = word.replace(/[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/g, "")
+        const cut = letters.substring(0, 3)
+        return cut ? cut.toUpperCase() : "•"
+    }
+
+    function longLabel(id) {
+        const labels = (Plasmoid.faceController && Plasmoid.faceController.sensorLabels) ? Plasmoid.faceController.sensorLabels : {}
+        return String(labels[id] || "")
+    }
+
+    function barColor(id) {
+        const colors = (Plasmoid.faceController && Plasmoid.faceController.sensorColors) ? Plasmoid.faceController.sensorColors : {}
+        return colorOf(colors[id])
+    }
 
     MouseArea {
         anchors.fill: parent
@@ -35,26 +61,32 @@ Item {
         anchors.fill: parent
         anchors.topMargin: 1
         anchors.bottomMargin: 1
-        spacing: 2
+        spacing: compactRoot.gap
 
         Repeater {
-            model: compactRoot.bars
+            model: compactRoot.sensorIds
 
             delegate: Item {
                 id: col
                 required property int index
                 required property var modelData
 
-                width: (row.width - row.spacing * (compactRoot.barCount - 1)) / compactRoot.barCount
+                width: compactRoot.barCount > 0
+                    ? (row.width - row.spacing * Math.max(0, compactRoot.barCount - 1)) / compactRoot.barCount
+                    : 0
                 height: row.height
 
                 property real temp: 0
-                readonly property string labelText: modelData.label
-                readonly property color barColor: modelData.color
-                readonly property string tipText: modelData.tip + " " + Math.round(temp) + " °C"
+                readonly property string labelText: compactRoot.shortLabel(modelData)
+                readonly property string tipName: {
+                    const longName = compactRoot.longLabel(modelData)
+                    return longName || labelText
+                }
+                readonly property color fillColor: compactRoot.barColor(modelData)
+                readonly property string tipText: tipName + " " + Math.round(temp) + " °C"
 
                 Sensors.Sensor {
-                    sensorId: col.modelData.sensor
+                    sensorId: String(col.modelData || "")
                     updateRateLimit: 2000
                     onValueChanged: col.temp = Number(value) || 0
                 }
@@ -70,7 +102,7 @@ Item {
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         height: parent.height * Math.max(0, Math.min(1, col.temp / compactRoot.rangeTo))
-                        color: col.barColor
+                        color: col.fillColor
                     }
                 }
 

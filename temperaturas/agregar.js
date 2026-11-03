@@ -9,7 +9,8 @@ function set(group, values) {
 }
 
 set([], { CurrentPreset: "org.kde.plasma.systemmonitor", popupHeight: 380, popupWidth: 440 });
-// Las barras de la barra salen de esta cara. El desplegable lo reemplaza la copia local del applet.
+// El panel lo dibuja CompactRepresentation.qml (una barra por highPrioritySensorIds).
+// chartFace queda en barchart para no romper Ajustes; el desplegable es FullRepresentation.qml.
 set(["Appearance"], { chartFace: "org.kde.ksysguard.barchart", title: "Temperaturas" });
 set(["FaceConfig"], { rangeAuto: false, rangeFrom: 0, rangeTo: 100 });
 set(["org.kde.ksysguard.linechart", "General"], {
