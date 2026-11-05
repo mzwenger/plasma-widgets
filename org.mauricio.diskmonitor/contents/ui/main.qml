@@ -75,6 +75,13 @@ PlasmoidItem {
           + "awk -v d=\"$d\" '$3==d{print $6, $10, $13}' /proc/diskstats; cut -d' ' -f1 /proc/uptime"
 
     ListModel { id: partModel }
+    ListModel { id: diskModel }
+    // Identificador estable del disco que esta instancia está mostrando.
+    property string listedDiskId: ""
+    property string pendingDiskId: ""
+    // El desplegable vive en el panel y todavía no existe cuando llega la primera lista.
+    property int wantedDiskIndex: -1
+    property int diskSync: 0
 
     P5Support.DataSource {
         id: executable
@@ -130,6 +137,71 @@ PlasmoidItem {
             else partModel.append(row)
         }
         applySelection()
+        syncDisks(data.disks || [], data.diskId || "")
+    }
+
+    function syncDisks(disks, diskId) {
+        let same = diskModel.count === disks.length
+        if (same) {
+            for (let i = 0; i < disks.length; i++) {
+                if (diskModel.get(i).diskId !== (disks[i].id || "")) {
+                    same = false
+                    break
+                }
+            }
+        }
+        if (!same) {
+            diskModel.clear()
+            for (let i = 0; i < disks.length; i++) {
+                const d = disks[i]
+                const modelName = d.model || "Disco"
+                diskModel.append({
+                    diskId: d.id || "",
+                    modelName: modelName,
+                    label: modelName + " · " + formatBytes(d.size || 0)
+                })
+            }
+        }
+        listedDiskId = diskId
+        if (pendingDiskId && pendingDiskId === diskId)
+            pendingDiskId = ""
+        const want = pendingDiskId || listedDiskId
+        let idx = -1
+        for (let i = 0; i < diskModel.count; i++) {
+            if (diskModel.get(i).diskId === want) {
+                idx = i
+                break
+            }
+        }
+        if (idx < 0)
+            idx = diskModel.count > 0 ? 0 : -1
+        wantedDiskIndex = idx
+        diskSync = diskSync + 1
+    }
+
+    function chooseDisk(index) {
+        if (index < 0 || index >= diskModel.count)
+            return
+        const row = diskModel.get(index)
+        if (!row || row.diskId === (pendingDiskId || listedDiskId))
+            return
+        const modelName = String(row.modelName || "Disco").replace(/\|/g, " ").trim() || "Disco"
+        const letter = (modelName.match(/[A-Za-z0-9]/) || ["?"])[0].toUpperCase()
+        pendingDiskId = row.diskId
+        wantedDiskIndex = index
+        Plasmoid.configuration.disk = letter + "|" + modelName + "|" + row.diskId
+        Plasmoid.configuration.graphPart = ""
+        partModel.clear()
+        activityDev = ""
+        prev = null
+        readHistory = []
+        writeHistory = []
+        size = 0
+        avail = -1
+        shownId = ""
+        shownName = ""
+        shownType = ""
+        run(listCommand)
     }
 
     function selectedIndex() {
@@ -417,10 +489,36 @@ PlasmoidItem {
                 unit: "MB/s"
             }
 
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                spacing: Kirigami.Units.smallSpacing
+
+                PlasmaComponents.Label {
+                    text: "Disco"
+                    font.bold: true
+                }
+                PlasmaComponents.ComboBox {
+                    id: diskBox
+                    Layout.fillWidth: true
+                    model: diskModel
+                    textRole: "label"
+                    onActivated: (index) => root.chooseDisk(index)
+                    function applyDiskIndex() {
+                        if (currentIndex !== root.wantedDiskIndex)
+                            currentIndex = root.wantedDiskIndex
+                    }
+                    Component.onCompleted: applyDiskIndex()
+                    Connections {
+                        target: root
+                        function onDiskSyncChanged() { diskBox.applyDiskIndex() }
+                    }
+                }
+            }
+
             PlasmaComponents.Label {
                 text: "Particiones"
                 font.bold: true
-                Layout.topMargin: Kirigami.Units.smallSpacing
             }
 
             PlasmaComponents.ScrollView {

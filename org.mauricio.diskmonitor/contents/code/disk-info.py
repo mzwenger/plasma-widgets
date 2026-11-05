@@ -64,6 +64,85 @@ def parent_disk(device):
     return "/dev/" + name
 
 
+def id_rank(name):
+    # _1 es el namespace NVMe, el mismo disco que el enlace sin sufijo.
+    if name.endswith("_1"):
+        return 3
+    if name.startswith("ata-") or (
+        name.startswith("nvme-") and not name.startswith(("nvme-eui.", "nvme-nvme."))
+    ):
+        return 0
+    if name.startswith(("wwn-", "nvme-eui.")):
+        return 1
+    return 2
+
+
+def stable_disk_id(device):
+    """Ruta que no cambia cuando el kernel renombra nvme0/nvme1."""
+    real = os.path.realpath(device)
+    found = []
+    directory = "/dev/disk/by-id"
+    if os.path.isdir(directory):
+        for name in os.listdir(directory):
+            if "-part" in name:
+                continue
+            path = os.path.join(directory, name)
+            try:
+                if os.path.realpath(path) != real:
+                    continue
+            except OSError:
+                continue
+            found.append((id_rank(name), name, path))
+    if not found:
+        return real
+    found.sort()
+    return found[0][2]
+
+
+def list_disks():
+    result = run(["lsblk", "-d", "-b", "-J", "-o", "NAME,PATH,TYPE,SIZE,MODEL,TRAN"])
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    devices = json.loads(result.stdout).get("blockdevices") or []
+    disks = []
+    for node in devices:
+        if node.get("type") != "disk":
+            continue
+        tran = (node.get("tran") or "").lower()
+        if tran not in ("nvme", "sata", "ata", "sas", "usb", "scsi", "virtio"):
+            continue
+        path = node.get("path")
+        if not path:
+            continue
+        model = (node.get("model") or "").strip() or (node.get("name") or "Disco")
+        disks.append(
+            {
+                "id": stable_disk_id(path),
+                "model": model,
+                "size": int(node.get("size") or 0),
+            }
+        )
+    disks.sort(key=lambda disk: disk["model"])
+    return disks
+
+
+def fallback_node(nodes):
+    """Partición a mostrar cuando el origen es el disco entero, no una partición."""
+    for node in nodes:
+        if "/" in mountpoints(node):
+            return node
+    best = None
+    best_size = -1
+    for node in nodes:
+        if is_swap(node) or not (node.get("fstype") or ""):
+            continue
+        size = int(node.get("size") or 0)
+        if size > best_size:
+            best = node
+            best_size = size
+    return best
+
+
 def partitions(disk):
     result = run(
         [
@@ -189,6 +268,8 @@ def title_and_type(node, is_default, widget_name):
     elif mounts:
         mount = mounts[0]
         title = "Sistema" if mount == "/" else (os.path.basename(mount.rstrip("/")) or mount)
+    elif fstype == "ntfs" and parttype == "Microsoft basic data":
+        title = "Windows"
     else:
         title = node.get("name") or "Partición"
     if not type_label:
@@ -201,6 +282,19 @@ def title_and_type(node, is_default, widget_name):
     return title, type_label
 
 
+def mounted_usage(node):
+    # lsblk pone primero los bind de Docker en /var/lib/docker. Ese directorio
+    # no es legible, df falla y la partición quedaba con tamaño pero sin uso.
+    # datos-nvme también está en /mnt/datos-nvme: se prueba ese montaje.
+    mounts = mountpoints(node)
+    mounts.sort(key=lambda mount: (mount.startswith("/var/lib/docker/"), len(mount)))
+    for mount in mounts:
+        got = df_size_free(mount)
+        if got:
+            return got
+    return None
+
+
 def space_of(node, part_size):
     path = os.path.realpath(node.get("path"))
     fstype = node.get("fstype") or ""
@@ -209,11 +303,10 @@ def space_of(node, part_size):
         if got:
             return got
         return part_size, None
-    mounts = mountpoints(node)
-    if mounts:
-        got = df_size_free(mounts[0])
-        if got:
-            return got
+    got = mounted_usage(node)
+    if got:
+        return got
+    if mountpoints(node):
         return part_size, None
     if fstype == "ntfs":
         got = ntfs_size_free(path)
@@ -230,7 +323,9 @@ def space_of(node, part_size):
 
 def collect(source, widget_name):
     device = resolve_device(source)
-    nodes = partitions(parent_disk(device))
+    disk = parent_disk(device)
+    origin_is_disk = os.path.realpath(device) == os.path.realpath(disk)
+    nodes = partitions(disk)
     parts = []
     for node in nodes:
         path = os.path.realpath(node.get("path"))
@@ -253,18 +348,32 @@ def collect(source, widget_name):
                 "isDefault": is_default,
             }
         )
-    return parts
+    if origin_is_disk and not any(part["isDefault"] for part in parts):
+        chosen = fallback_node(nodes)
+        if chosen is not None:
+            chosen_id = chosen.get("partuuid") or chosen.get("name") or ""
+            for part in parts:
+                if part["id"] == chosen_id:
+                    part["isDefault"] = True
+                    break
+    return parts, stable_disk_id(disk), list_disks()
 
 
 def main():
     source = sys.argv[1] if len(sys.argv) > 1 else "/"
     widget_name = sys.argv[2] if len(sys.argv) > 2 else ""
+    disk_id = ""
+    disks = []
     try:
-        parts = collect(source, widget_name)
+        parts, disk_id, disks = collect(source, widget_name)
     except Exception as exc:
         print("disk-info: " + str(exc), file=sys.stderr)
         parts = []
-    json.dump({"parts": parts}, sys.stdout, ensure_ascii=True)
+        try:
+            disks = list_disks()
+        except Exception as exc2:
+            print("disk-info: " + str(exc2), file=sys.stderr)
+    json.dump({"parts": parts, "diskId": disk_id, "disks": disks}, sys.stdout, ensure_ascii=True)
     sys.stdout.write("\n")
 
 
