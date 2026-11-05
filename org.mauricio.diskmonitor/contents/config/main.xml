@@ -3,7 +3,8 @@
   <kcfgfile name=""/>
   <group name="General">
     <!-- Disco que muestra esta instancia: letra|nombre|origen.
-         origen = punto de montaje (se lee con df) o /dev/... NTFS sin montar (se lee con ntfsinfo). -->
+         origen = punto de montaje, partición /dev/... o el disco entero por /dev/disk/by-id/
+         (no el nombre nvme0/nvme1, que el kernel cambia de arranque). -->
     <entry name="disk" type="String"><default>S|Sistema|/</default></entry>
     <!-- PARTUUID de la partición que dibuja el gráfico. Vacío = la de origen. -->
     <entry name="graphPart" type="String"><default></default></entry>
